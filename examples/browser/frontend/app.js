@@ -230,7 +230,7 @@ function hideError() {
   errorState.hidden = true;
 }
 
-async function closeOverlay() {
+async function closePageWebView() {
   if (!pageWebView) return;
   try {
     await pageWebView.close();
@@ -253,7 +253,7 @@ async function probeUrl(url) {
   }
 }
 
-async function ensureOverlay(url) {
+async function ensurePageWebView(url) {
   var frame = pageFrame();
   if (!pageWebView) {
     await window.zero.webviews.setFrame({ label: "main", frame: chromeFrame() });
@@ -284,7 +284,7 @@ async function navigateTo(url, options) {
     await probeUrl(target);
   } catch (err) {
     setLoading(false);
-    await closeOverlay();
+    await closePageWebView();
     var reason = err.name === "AbortError"
       ? "The connection timed out. The server may be down or unreachable."
       : "The site can\u2019t be reached. Check the address or your connection.";
@@ -295,7 +295,7 @@ async function navigateTo(url, options) {
     return;
   }
   try {
-    await ensureOverlay(target);
+    await ensurePageWebView(target);
     currentUrl = target;
     trackVisited(target);
     if (options.record !== false) remember(target);
@@ -303,7 +303,7 @@ async function navigateTo(url, options) {
     setStatus(hostFromUrl(target), 2000);
   } catch (error) {
     setLoading(false);
-    await closeOverlay();
+    await closePageWebView();
     var msg = error && error.message ? error.message : "Navigation failed";
     showError(target, msg);
     setStatus("Failed to load " + hostFromUrl(target));

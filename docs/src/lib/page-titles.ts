@@ -4,7 +4,7 @@ export const PAGE_TITLES: Record<string, string> = {
   "app-model": "App Model",
   frontend: "Frontend Projects",
   windows: "Windows",
-  webviews: "Overlay WebViews",
+  webviews: "Multiple WebViews",
   bridge: "Bridge",
   "bridge/builtin-commands": "Builtin Commands",
   dialogs: "Dialogs",

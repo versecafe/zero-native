@@ -51,7 +51,7 @@ struct Window {
     bool focused = false;
 };
 
-struct Overlay {
+struct ChildWebView {
     uint64_t window_id = 1;
     std::string label;
     std::string url;
@@ -71,7 +71,7 @@ struct Host {
     void *bridge_context = nullptr;
     bool running = false;
     std::map<uint64_t, Window> windows;
-    std::map<std::string, Overlay> overlays;
+    std::map<std::string, ChildWebView> webviews;
 };
 
 static std::string slice(const char *bytes, size_t len) {
@@ -97,19 +97,19 @@ static void emit(Host *host, const Window &window, EventKind kind) {
     host->callback(host->callback_context, &event);
 }
 
-static std::string overlayKey(uint64_t window_id, const std::string &label) {
+static std::string webViewKey(uint64_t window_id, const std::string &label) {
     return std::to_string(window_id) + ":" + label;
 }
 
-static bool validOverlayFrame(double x, double y, double width, double height) {
+static bool validChildWebViewFrame(double x, double y, double width, double height) {
     return x >= 0 && y >= 0 && width > 0 && height > 0;
 }
 
-static void destroyOverlaysForWindow(Host *host, uint64_t window_id) {
+static void destroyChildWebViewsForWindow(Host *host, uint64_t window_id) {
     if (!host) return;
-    for (auto it = host->overlays.begin(); it != host->overlays.end();) {
+    for (auto it = host->webviews.begin(); it != host->webviews.end();) {
         if (it->second.window_id == window_id) {
-            it = host->overlays.erase(it);
+            it = host->webviews.erase(it);
         } else {
             ++it;
         }
@@ -257,13 +257,13 @@ int zero_native_gtk_close_window(Host *host, uint64_t window_id) {
     if (!host) return 0;
     auto found = host->windows.find(window_id);
     if (found == host->windows.end()) return 0;
-    destroyOverlaysForWindow(host, window_id);
+    destroyChildWebViewsForWindow(host, window_id);
     found->second.open = false;
     emit(host, found->second, kWindowFrame);
     return 1;
 }
 
-int zero_native_gtk_create_overlay(Host *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len, double x, double y, double width, double height, int layer, int transparent, int bridge_enabled) {
+int zero_native_gtk_create_webview(Host *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len, double x, double y, double width, double height, int layer, int transparent, int bridge_enabled) {
     (void)host;
     (void)window_id;
     (void)label;
@@ -280,7 +280,7 @@ int zero_native_gtk_create_overlay(Host *host, uint64_t window_id, const char *l
     return 0;
 }
 
-int zero_native_gtk_set_overlay_frame(Host *host, uint64_t window_id, const char *label, size_t label_len, double x, double y, double width, double height) {
+int zero_native_gtk_set_webview_frame(Host *host, uint64_t window_id, const char *label, size_t label_len, double x, double y, double width, double height) {
     (void)host;
     (void)window_id;
     (void)label;
@@ -292,7 +292,7 @@ int zero_native_gtk_set_overlay_frame(Host *host, uint64_t window_id, const char
     return 0;
 }
 
-int zero_native_gtk_navigate_overlay(Host *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len) {
+int zero_native_gtk_navigate_webview(Host *host, uint64_t window_id, const char *label, size_t label_len, const char *url, size_t url_len) {
     (void)host;
     (void)window_id;
     (void)label;
@@ -302,7 +302,7 @@ int zero_native_gtk_navigate_overlay(Host *host, uint64_t window_id, const char 
     return 0;
 }
 
-int zero_native_gtk_set_overlay_zoom(Host *host, uint64_t window_id, const char *label, size_t label_len, double zoom) {
+int zero_native_gtk_set_webview_zoom(Host *host, uint64_t window_id, const char *label, size_t label_len, double zoom) {
     (void)host;
     (void)window_id;
     (void)label;
@@ -311,7 +311,7 @@ int zero_native_gtk_set_overlay_zoom(Host *host, uint64_t window_id, const char 
     return 0;
 }
 
-int zero_native_gtk_set_overlay_layer(Host *host, uint64_t window_id, const char *label, size_t label_len, int layer) {
+int zero_native_gtk_set_webview_layer(Host *host, uint64_t window_id, const char *label, size_t label_len, int layer) {
     (void)host;
     (void)window_id;
     (void)label;
@@ -320,7 +320,7 @@ int zero_native_gtk_set_overlay_layer(Host *host, uint64_t window_id, const char
     return 0;
 }
 
-int zero_native_gtk_close_overlay(Host *host, uint64_t window_id, const char *label, size_t label_len) {
+int zero_native_gtk_close_webview(Host *host, uint64_t window_id, const char *label, size_t label_len) {
     (void)host;
     (void)window_id;
     (void)label;
