@@ -11,6 +11,11 @@ pub const default_windows_dir = "third_party/cef/windows";
 pub const default_dir = "";
 pub const default_release_output_dir = "zig-out/cef";
 
+const sha256_shell_snippet = if (builtin.target.os.tag == .windows)
+    "sha256sum"
+else
+    "shasum -a 256";
+
 pub const Error = error{
     InvalidArguments,
     UnsupportedPlatform,
@@ -436,7 +441,7 @@ fn verifyArchiveChecksum(allocator: std.mem.Allocator, io: std.Io, cache_path: [
     defer allocator.free(quoted_archive);
     const command = try std.fmt.allocPrint(
         allocator,
-        "cd {s} && expected=$(tr -d '[:space:]' < {s}.sha256) && actual=$(shasum -a 256 {s} | awk '{{print $1}}') && if [ \"$expected\" != \"$actual\" ]; then echo \"CEF archive checksum mismatch\" >&2; exit 1; fi",
+        "cd {s} && expected=$(tr -d '[:space:]' < {s}.sha256) && actual=$(" ++ sha256_shell_snippet ++ " {s} | awk '{{print $1}}') && if [ \"$expected\" != \"$actual\" ]; then echo \"CEF archive checksum mismatch\" >&2; exit 1; fi",
         .{ quoted_cache, quoted_archive, quoted_archive },
     );
     defer allocator.free(command);
@@ -460,9 +465,10 @@ pub fn prepareRelease(allocator: std.mem.Allocator, io: std.Io, options: Prepare
     defer allocator.free(quoted_output);
     const quoted_name = try shellQuote(allocator, name);
     defer allocator.free(quoted_name);
+    const force_local = if (builtin.target.os.tag == .windows) " --force-local" else "";
     const command = try std.fmt.allocPrint(
         allocator,
-        "output_dir=$(cd {s} && pwd) && cd {s} && tar -czf \"$output_dir\"/{s} include Release libcef_dll_wrapper $(test -d Resources && echo Resources) $(test -d locales && echo locales)",
+        "output_dir=$(cd {s} && pwd) && cd {s} && tar -czf" ++ force_local ++ " \"$output_dir\"/{s} include Release libcef_dll_wrapper $(test -d Resources && echo Resources) $(test -d locales && echo locales)",
         .{ quoted_output, quoted_dir, quoted_name },
     );
     defer allocator.free(command);
@@ -470,7 +476,7 @@ pub fn prepareRelease(allocator: std.mem.Allocator, io: std.Io, options: Prepare
 
     const sha_command = try std.fmt.allocPrint(
         allocator,
-        "cd {s} && shasum -a 256 {s} | awk '{{print $1}}' > {s}.sha256",
+        "cd {s} && " ++ sha256_shell_snippet ++ " {s} | awk '{{print $1}}' > {s}.sha256",
         .{ quoted_output, quoted_name, quoted_name },
     );
     defer allocator.free(sha_command);
