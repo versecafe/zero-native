@@ -65,7 +65,7 @@ export interface ZeroNativeWebViewInfo {
 }
 
 export interface ZeroNativeCreateWebViewOptions {
-  /** Stable label for this WebView. Defaults to "webview". Unique per native window. */
+  /** Stable label for this child WebView. Defaults to "webview". Unique per native window. "main" is reserved for the startup WebView. */
   label?: string;
   /** Parent native window id. Defaults to the caller and must match the window that calls the command when provided. */
   windowId?: number;
@@ -82,6 +82,7 @@ export interface ZeroNativeCreateWebViewOptions {
 }
 
 export interface ZeroNativeSetWebViewFrameOptions {
+  /** Defaults to "webview". Use "main" to resize the startup WebView. */
   label?: string;
   /** Defaults to the caller and must match the window that calls the command when provided. */
   windowId?: number;
@@ -89,6 +90,7 @@ export interface ZeroNativeSetWebViewFrameOptions {
 }
 
 export interface ZeroNativeNavigateWebViewOptions {
+  /** Defaults to "webview". Child WebViews only. */
   label?: string;
   /** Defaults to the caller and must match the window that calls the command when provided. */
   windowId?: number;
@@ -96,6 +98,7 @@ export interface ZeroNativeNavigateWebViewOptions {
 }
 
 export interface ZeroNativeSetWebViewZoomOptions {
+  /** Defaults to "webview". Use "main" to zoom the startup WebView. */
   label?: string;
   /** Defaults to the caller and must match the window that calls the command when provided. */
   windowId?: number;
@@ -104,6 +107,7 @@ export interface ZeroNativeSetWebViewZoomOptions {
 }
 
 export interface ZeroNativeSetWebViewLayerOptions {
+  /** Defaults to "webview". "main" support depends on the native backend. */
   label?: string;
   /** Defaults to the caller and must match the window that calls the command when provided. */
   windowId?: number;
@@ -111,6 +115,7 @@ export interface ZeroNativeSetWebViewLayerOptions {
 }
 
 export interface ZeroNativeCloseWebViewOptions {
+  /** Defaults to "webview". The reserved "main" WebView cannot be closed. */
   label?: string;
   /** Defaults to the caller and must match the window that calls the command when provided. */
   windowId?: number;

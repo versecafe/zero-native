@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
         std.debug.panic("invalid app.zon web engine config: {s}", .{@errorName(err)});
     };
     const web_engine = buildWebEngineFromResolved(resolved_web_engine.engine);
+    const browser_web_engine: WebEngineOption = web_engine_override orelse .system;
     const cef_auto_install = resolved_web_engine.cef_auto_install;
     const selected_platform: PlatformOption = switch (platform_option) {
         .auto => if (target.result.os.tag == .macos) .macos else if (target.result.os.tag == .linux) .linux else if (target.result.os.tag == .windows) .windows else .null,
@@ -193,7 +194,8 @@ pub fn build(b: *std.Build) void {
     const run_webview_step = b.step("run-webview", "Run the zero-native WebView example");
     run_webview_step.dependOn(&run_webview.step);
 
-    const run_browser = b.addSystemCommand(&.{ "zig", "build", "run", b.fmt("-Dplatform={s}", .{platform_arg}), b.fmt("-Dtrace={s}", .{@tagName(trace_option)}), b.fmt("-Dweb-engine={s}", .{@tagName(web_engine)}), b.fmt("-Dcef-dir={s}", .{cef_dir}) });
+    const browser_cef_dir = cef_dir_override orelse defaultCefDir(selected_platform, "third_party/cef/macos");
+    const run_browser = b.addSystemCommand(&.{ "zig", "build", "run", b.fmt("-Dplatform={s}", .{platform_arg}), b.fmt("-Dtrace={s}", .{@tagName(trace_option)}), b.fmt("-Dweb-engine={s}", .{@tagName(browser_web_engine)}), b.fmt("-Dcef-dir={s}", .{browser_cef_dir}) });
     run_browser.setCwd(b.path("examples/browser"));
     const run_browser_step = b.step("run-browser", "Run the zero-native browser example");
     run_browser_step.dependOn(&run_browser.step);

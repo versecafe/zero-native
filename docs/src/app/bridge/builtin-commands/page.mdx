@@ -89,7 +89,7 @@ Window commands are available through `window.zero.windows.*` when `js_window_ap
 
 WebView commands are available through `window.zero.webviews.*` when `js_window_api` is `true`. They use the same origin and `window` permission checks as window commands. WebView URLs are also checked against `security.navigation.allowed_origins`.
 
-If `windowId` is omitted, the runtime uses the window that sent the bridge message. If provided, `windowId` must match that same calling window. Child WebViews are isolated by default and receive `window.zero` only when created with `bridge: true`.
+If `windowId` is omitted, the runtime uses the window that sent the bridge message. If provided, `windowId` must match that same calling window. Child WebViews are isolated by default and receive `window.zero` only when created with `bridge: true`. The startup WebView is always listed as `main`; that label is reserved and cannot be used for child WebView creation.
 
 ## Dialog commands
 

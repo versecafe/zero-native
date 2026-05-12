@@ -243,16 +243,6 @@ async function closePageWebView() {
 
 // ── Navigation ──
 
-async function probeUrl(url) {
-  var controller = new AbortController();
-  var timeout = setTimeout(function () { controller.abort(); }, 6000);
-  try {
-    await fetch(url, { method: "HEAD", mode: "no-cors", signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function ensurePageWebView(url) {
   var frame = pageFrame();
   if (!pageWebView) {
@@ -280,20 +270,6 @@ async function navigateTo(url, options) {
   hideError();
   setLoading(true);
   setStatus("Loading " + hostFromUrl(target) + "\u2026");
-  try {
-    await probeUrl(target);
-  } catch (err) {
-    setLoading(false);
-    await closePageWebView();
-    var reason = err.name === "AbortError"
-      ? "The connection timed out. The server may be down or unreachable."
-      : "The site can\u2019t be reached. Check the address or your connection.";
-    showError(target, reason);
-    setStatus("Failed to load " + hostFromUrl(target));
-    if (options.record !== false) remember(target);
-    currentUrl = target;
-    return;
-  }
   try {
     await ensurePageWebView(target);
     currentUrl = target;

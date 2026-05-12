@@ -19,6 +19,7 @@ typedef struct zero_native_gtk_webview {
     int layer;
     int transparent;
     int bridge_enabled;
+    WebKitUserContentManager *content_manager;
 } zero_native_gtk_webview_t;
 
 typedef struct zero_native_gtk_window {
@@ -616,7 +617,6 @@ static gboolean on_webview_decide_policy(WebKitWebView *web_view, WebKitPolicyDe
 }
 
 static void on_bridge_message(WebKitUserContentManager *manager, JSCValue *js_result, gpointer data) {
-    (void)manager;
     zero_native_gtk_window_t *win = data;
     zero_native_gtk_host_t *host = win->host;
     if (!host->bridge_callback) return;
@@ -624,9 +624,20 @@ static void on_bridge_message(WebKitUserContentManager *manager, JSCValue *js_re
     char *message = jsc_value_to_string(js_result);
     if (!message) return;
 
-    const char *uri = webkit_web_view_get_uri(win->web_view);
-    char *computed_origin = win->bridge_origin ? g_strdup(win->bridge_origin) : zero_native_origin_for_uri(uri);
-    host->bridge_callback(host->bridge_context, win->id, message, strlen(message), computed_origin, strlen(computed_origin));
+    const char *label = "main";
+    WebKitWebView *source_webview = win->web_view;
+    if (manager != win->content_manager) {
+        for (int i = 0; i < win->webview_count; i++) {
+            if (win->webviews[i].content_manager == manager) {
+                label = win->webviews[i].label ? win->webviews[i].label : "webview";
+                source_webview = win->webviews[i].web_view;
+                break;
+            }
+        }
+    }
+    const char *uri = webkit_web_view_get_uri(source_webview);
+    char *computed_origin = win->bridge_origin && strcmp(label, "main") == 0 ? g_strdup(win->bridge_origin) : zero_native_origin_for_uri(uri);
+    host->bridge_callback(host->bridge_context, win->id, label, strlen(label), message, strlen(message), computed_origin, strlen(computed_origin));
     g_free(computed_origin);
     g_free(message);
 }
@@ -853,8 +864,23 @@ void zero_native_gtk_bridge_respond(zero_native_gtk_host_t *host, const char *re
 }
 
 void zero_native_gtk_bridge_respond_window(zero_native_gtk_host_t *host, uint64_t window_id, const char *response, size_t response_len) {
+    zero_native_gtk_bridge_respond_webview(host, window_id, "main", 4, response, response_len);
+}
+
+void zero_native_gtk_bridge_respond_webview(zero_native_gtk_host_t *host, uint64_t window_id, const char *webview_label, size_t webview_label_len, const char *response, size_t response_len) {
     zero_native_gtk_window_t *win = zero_native_find_window(host, window_id);
     if (!win || !win->web_view) return;
+    char *label = webview_label_len > 0 ? zero_native_strndup(webview_label, webview_label_len) : zero_native_strndup("main", 4);
+    if (!label) return;
+    WebKitWebView *target = NULL;
+    if (strcmp(label, "main") == 0) {
+        target = win->web_view;
+    } else {
+        zero_native_gtk_webview_t *webview = zero_native_find_webview(win, label);
+        if (webview) target = webview->web_view;
+    }
+    free(label);
+    if (!target) return;
 
     char *resp = zero_native_strndup(response, response_len);
     if (!resp) return;
@@ -868,12 +894,7 @@ void zero_native_gtk_bridge_respond_window(zero_native_gtk_host_t *host, uint64_
         memcpy(script + prefix_len, resp, response_len);
         memcpy(script + prefix_len + response_len, ");", suffix_len);
         script[script_len] = '\0';
-        webkit_web_view_evaluate_javascript(win->web_view, script, -1, NULL, NULL, NULL, NULL, NULL);
-        for (int i = 0; i < win->webview_count; i++) {
-            if (win->webviews[i].web_view) {
-                webkit_web_view_evaluate_javascript(win->webviews[i].web_view, script, -1, NULL, NULL, NULL, NULL, NULL);
-            }
-        }
+        webkit_web_view_evaluate_javascript(target, script, -1, NULL, NULL, NULL, NULL, NULL);
         free(script);
     }
     free(resp);
@@ -991,6 +1012,7 @@ int zero_native_gtk_create_webview(zero_native_gtk_host_t *host, uint64_t window
     webview->layer = layer;
     webview->transparent = transparent != 0;
     webview->bridge_enabled = bridge_enabled != 0;
+    webview->content_manager = manager;
     zero_native_apply_webview_frame(webview);
     gtk_overlay_add_overlay(GTK_OVERLAY(win->stack_root), GTK_WIDGET(web_view));
     if (transparent) {
@@ -1047,6 +1069,11 @@ int zero_native_gtk_navigate_webview(zero_native_gtk_host_t *host, uint64_t wind
 int zero_native_gtk_set_webview_zoom(zero_native_gtk_host_t *host, uint64_t window_id, const char *label, size_t label_len, double zoom) {
     zero_native_gtk_window_t *win = zero_native_find_window(host, window_id);
     char *label_copy = label_len > 0 ? zero_native_strndup(label, label_len) : NULL;
+    if (label_copy && strcmp(label_copy, "main") == 0 && win && win->web_view && zoom >= 0.25 && zoom <= 5.0) {
+        webkit_web_view_set_zoom_level(win->web_view, zoom);
+        free(label_copy);
+        return 1;
+    }
     zero_native_gtk_webview_t *webview = zero_native_find_webview(win, label_copy);
     free(label_copy);
     if (!webview || !webview->web_view || zoom < 0.25 || zoom > 5.0) return 0;
@@ -1058,9 +1085,8 @@ int zero_native_gtk_set_webview_layer(zero_native_gtk_host_t *host, uint64_t win
     zero_native_gtk_window_t *win = zero_native_find_window(host, window_id);
     char *label_copy = label_len > 0 ? zero_native_strndup(label, label_len) : NULL;
     if (label_copy && strcmp(label_copy, "main") == 0 && win && win->web_view) {
-        (void)layer;
         free(label_copy);
-        return 1;
+        return 0;
     }
     zero_native_gtk_webview_t *webview = zero_native_find_webview(win, label_copy);
     free(label_copy);

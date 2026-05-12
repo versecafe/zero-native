@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <climits>
 #include <map>
 #include <string>
 #include <vector>
@@ -47,7 +48,7 @@ struct WindowsEvent {
 };
 
 using EventCallback = void (*)(void *, const WindowsEvent *);
-using BridgeCallback = void (*)(void *, uint64_t, const char *, size_t, const char *, size_t);
+using BridgeCallback = void (*)(void *, uint64_t, const char *, size_t, const char *, size_t, const char *, size_t);
 
 struct Window {
     uint64_t id = 1;
@@ -71,6 +72,7 @@ struct ChildWebView {
     double height = 0;
     double zoom = 1.0;
     int layer = 0;
+    uint64_t creation_order = 0;
     bool transparent = false;
     bool bridge_enabled = false;
 #if ZERO_NATIVE_HAS_WEBVIEW2
@@ -92,6 +94,7 @@ struct Host {
     bool running = false;
     std::map<uint64_t, Window> windows;
     std::map<std::string, ChildWebView> webviews;
+    uint64_t next_webview_order = 1;
     std::vector<std::string> allowed_origins;
     std::vector<std::string> allowed_external_urls;
     int external_link_action = 0;
@@ -301,10 +304,18 @@ static void applyChildWebViewLayer(Host *host, uint64_t window_id, const std::st
     auto found = host->webviews.find(webViewKey(window_id, label));
     if (found == host->webviews.end() || !found->second.hwnd) return;
     HWND insert_after = HWND_TOP;
+    int best_layer = INT_MIN;
+    uint64_t best_order = 0;
     for (auto &entry : host->webviews) {
         const ChildWebView &candidate = entry.second;
         if (candidate.window_id != window_id || candidate.label == label || !candidate.hwnd) continue;
-        if (candidate.layer <= found->second.layer) insert_after = candidate.hwnd;
+        if (candidate.layer < found->second.layer or (candidate.layer == found->second.layer and candidate.creation_order < found->second.creation_order)) {
+            if (candidate.layer > best_layer or (candidate.layer == best_layer and candidate.creation_order > best_order)) {
+                insert_after = candidate.hwnd;
+                best_layer = candidate.layer;
+                best_order = candidate.creation_order;
+            }
+        }
     }
     SetWindowPos(found->second.hwnd, insert_after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
@@ -498,6 +509,15 @@ void zero_native_windows_bridge_respond_window(Host *host, uint64_t window_id, c
     (void)response_len;
 }
 
+void zero_native_windows_bridge_respond_webview(Host *host, uint64_t window_id, const char *webview_label, size_t webview_label_len, const char *response, size_t response_len) {
+    (void)host;
+    (void)window_id;
+    (void)webview_label;
+    (void)webview_label_len;
+    (void)response;
+    (void)response_len;
+}
+
 void zero_native_windows_emit_window_event(Host *host, uint64_t window_id, const char *name, size_t name_len, const char *detail_json, size_t detail_json_len) {
     (void)host;
     (void)window_id;
@@ -566,7 +586,7 @@ int zero_native_windows_create_webview(Host *host, uint64_t window_id, const cha
     (void)bridge_enabled;
     return 0;
 #else
-    if (!host || label_len == 0 || url_len == 0 || !validChildWebViewFrame(x, y, width, height)) return 0;
+    if (!host || label_len == 0 || url_len == 0 || !validChildWebViewFrame(x, y, width, height) || bridge_enabled) return 0;
     auto window = host->windows.find(window_id);
     if (window == host->windows.end() || !window->second.hwnd) return 0;
     std::string label_string = slice(label, label_len);
@@ -599,6 +619,7 @@ int zero_native_windows_create_webview(Host *host, uint64_t window_id, const cha
     webview.width = width;
     webview.height = height;
     webview.layer = layer;
+    webview.creation_order = host->next_webview_order++;
     webview.transparent = transparent != 0;
     webview.bridge_enabled = bridge_enabled != 0;
     host->webviews[key] = webview;
@@ -614,6 +635,7 @@ int zero_native_windows_create_webview(Host *host, uint64_t window_id, const cha
 
 int zero_native_windows_set_webview_frame(Host *host, uint64_t window_id, const char *label, size_t label_len, double x, double y, double width, double height) {
     if (!host || label_len == 0 || !validChildWebViewFrame(x, y, width, height)) return 0;
+    if (slice(label, label_len) == "main") return 1;
     auto found = host->webviews.find(webViewKey(window_id, slice(label, label_len)));
     if (found == host->webviews.end() || !found->second.hwnd) return 0;
     found->second.x = x;
@@ -664,7 +686,9 @@ int zero_native_windows_set_webview_zoom(Host *host, uint64_t window_id, const c
     return 0;
 #else
     if (!host || label_len == 0 || zoom < 0.25 || zoom > 5.0) return 0;
-    auto found = host->webviews.find(webViewKey(window_id, slice(label, label_len)));
+    std::string label_string = slice(label, label_len);
+    if (label_string == "main") return 0;
+    auto found = host->webviews.find(webViewKey(window_id, label_string));
     if (found == host->webviews.end() || !found->second.hwnd) return 0;
     found->second.zoom = zoom;
     if (found->second.controller) {
@@ -677,6 +701,7 @@ int zero_native_windows_set_webview_zoom(Host *host, uint64_t window_id, const c
 int zero_native_windows_set_webview_layer(Host *host, uint64_t window_id, const char *label, size_t label_len, int layer) {
     if (!host || label_len == 0) return 0;
     std::string label_string = slice(label, label_len);
+    if (label_string == "main") return 0;
     auto found = host->webviews.find(webViewKey(window_id, label_string));
     if (found == host->webviews.end() || !found->second.hwnd) return 0;
     found->second.layer = layer;

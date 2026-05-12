@@ -33,7 +33,7 @@ typedef struct {
 } zero_native_appkit_event_t;
 
 typedef void (*zero_native_appkit_event_callback_t)(void *context, const zero_native_appkit_event_t *event);
-typedef void (*zero_native_appkit_bridge_callback_t)(void *context, uint64_t window_id, const char *message, size_t message_len, const char *origin, size_t origin_len);
+typedef void (*zero_native_appkit_bridge_callback_t)(void *context, uint64_t window_id, const char *webview_label, size_t webview_label_len, const char *message, size_t message_len, const char *origin, size_t origin_len);
 
 zero_native_appkit_host_t *zero_native_appkit_create(const char *app_name, size_t app_name_len, const char *window_title, size_t window_title_len, const char *bundle_id, size_t bundle_id_len, const char *icon_path, size_t icon_path_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame);
 void zero_native_appkit_destroy(zero_native_appkit_host_t *host);
@@ -44,6 +44,7 @@ void zero_native_appkit_load_window_webview(zero_native_appkit_host_t *host, uin
 void zero_native_appkit_set_bridge_callback(zero_native_appkit_host_t *host, zero_native_appkit_bridge_callback_t callback, void *context);
 void zero_native_appkit_bridge_respond(zero_native_appkit_host_t *host, const char *response, size_t response_len);
 void zero_native_appkit_bridge_respond_window(zero_native_appkit_host_t *host, uint64_t window_id, const char *response, size_t response_len);
+void zero_native_appkit_bridge_respond_webview(zero_native_appkit_host_t *host, uint64_t window_id, const char *webview_label, size_t webview_label_len, const char *response, size_t response_len);
 void zero_native_appkit_emit_window_event(zero_native_appkit_host_t *host, uint64_t window_id, const char *name, size_t name_len, const char *detail_json, size_t detail_json_len);
 void zero_native_appkit_set_security_policy(zero_native_appkit_host_t *host, const char *allowed_origins, size_t allowed_origins_len, const char *external_urls, size_t external_urls_len, int external_action);
 int zero_native_appkit_create_window(zero_native_appkit_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame);

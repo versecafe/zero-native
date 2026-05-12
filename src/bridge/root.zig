@@ -31,6 +31,7 @@ pub const ParseError = error{
 pub const Source = struct {
     origin: []const u8 = "",
     window_id: u64 = 1,
+    webview_label: []const u8 = "main",
 };
 
 pub const Request = struct {

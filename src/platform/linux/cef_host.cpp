@@ -37,7 +37,7 @@ struct OpenDialogResult {
 };
 
 using EventCallback = void (*)(void *, const GtkEvent *);
-using BridgeCallback = void (*)(void *, uint64_t, const char *, size_t, const char *, size_t);
+using BridgeCallback = void (*)(void *, uint64_t, const char *, size_t, const char *, size_t, const char *, size_t);
 
 struct Window {
     uint64_t id = 1;
@@ -205,6 +205,15 @@ void zero_native_gtk_bridge_respond(Host *host, const char *response, size_t res
 void zero_native_gtk_bridge_respond_window(Host *host, uint64_t window_id, const char *response, size_t response_len) {
     (void)host;
     (void)window_id;
+    (void)response;
+    (void)response_len;
+}
+
+void zero_native_gtk_bridge_respond_webview(Host *host, uint64_t window_id, const char *webview_label, size_t webview_label_len, const char *response, size_t response_len) {
+    (void)host;
+    (void)window_id;
+    (void)webview_label;
+    (void)webview_label_len;
     (void)response;
     (void)response_len;
 }

@@ -210,6 +210,7 @@ pub const BridgeMessage = struct {
     bytes: []const u8,
     origin: []const u8 = "",
     window_id: WindowId = 1,
+    webview_label: []const u8 = "main",
 };
 
 pub const max_dialog_path_bytes: usize = 4096;
@@ -311,6 +312,7 @@ pub const PlatformServices = struct {
     load_window_webview_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId, source: WebViewSource) anyerror!void = null,
     complete_bridge_fn: ?*const fn (context: ?*anyopaque, response: []const u8) anyerror!void = null,
     complete_window_bridge_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId, response: []const u8) anyerror!void = null,
+    complete_webview_bridge_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId, webview_label: []const u8, response: []const u8) anyerror!void = null,
     create_window_fn: ?*const fn (context: ?*anyopaque, options: WindowOptions) anyerror!WindowInfo = null,
     focus_window_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId) anyerror!void = null,
     close_window_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId) anyerror!void = null,
@@ -361,6 +363,11 @@ pub const PlatformServices = struct {
         if (self.complete_window_bridge_fn) |complete_fn| return complete_fn(self.context, window_id, response);
         if (window_id == 1) return self.completeBridge(response);
         return error.UnsupportedService;
+    }
+
+    pub fn completeWebViewBridge(self: PlatformServices, window_id: WindowId, webview_label: []const u8, response: []const u8) anyerror!void {
+        if (self.complete_webview_bridge_fn) |complete_fn| return complete_fn(self.context, window_id, webview_label, response);
+        return self.completeWindowBridge(window_id, response);
     }
 
     pub fn createWindow(self: PlatformServices, options: WindowOptions) anyerror!WindowInfo {
@@ -488,6 +495,7 @@ pub const NullPlatform = struct {
     bridge_response: [16 * 1024]u8 = undefined,
     bridge_response_len: usize = 0,
     bridge_response_window_id: WindowId = 0,
+    bridge_response_webview_label: []const u8 = "main",
 
     pub fn init(surface_value: Surface) NullPlatform {
         return .{ .surface_value = surface_value };
@@ -513,6 +521,7 @@ pub const NullPlatform = struct {
                 .load_window_webview_fn = loadWindowWebView,
                 .complete_bridge_fn = completeBridge,
                 .complete_window_bridge_fn = completeWindowBridge,
+                .complete_webview_bridge_fn = completeWebViewBridge,
                 .create_window_fn = createWindow,
                 .focus_window_fn = focusWindow,
                 .close_window_fn = closeWindow,
@@ -575,19 +584,24 @@ pub const NullPlatform = struct {
     }
 
     fn completeBridge(context: ?*anyopaque, response: []const u8) anyerror!void {
-        try recordBridgeResponse(context, 1, response);
+        try recordBridgeResponse(context, 1, "main", response);
     }
 
     fn completeWindowBridge(context: ?*anyopaque, window_id: WindowId, response: []const u8) anyerror!void {
-        try recordBridgeResponse(context, window_id, response);
+        try recordBridgeResponse(context, window_id, "main", response);
     }
 
-    fn recordBridgeResponse(context: ?*anyopaque, window_id: WindowId, response: []const u8) anyerror!void {
+    fn completeWebViewBridge(context: ?*anyopaque, window_id: WindowId, webview_label: []const u8, response: []const u8) anyerror!void {
+        try recordBridgeResponse(context, window_id, webview_label, response);
+    }
+
+    fn recordBridgeResponse(context: ?*anyopaque, window_id: WindowId, webview_label: []const u8, response: []const u8) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
         const count = @min(response.len, self.bridge_response.len);
         @memcpy(self.bridge_response[0..count], response[0..count]);
         self.bridge_response_len = count;
         self.bridge_response_window_id = window_id;
+        self.bridge_response_webview_label = webview_label;
     }
 
     fn createWindow(context: ?*anyopaque, options: WindowOptions) anyerror!WindowInfo {
@@ -658,6 +672,11 @@ pub const NullPlatform = struct {
 
     fn setWebViewFrame(context: ?*anyopaque, window_id: WindowId, label: []const u8, frame: geometry.RectF) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
+        if (std.mem.eql(u8, label, "main")) {
+            _ = self.findWindowIndex(window_id) orelse if (window_id == 1) 0 else return error.WindowNotFound;
+            if (!isValidWebViewFrame(frame)) return error.InvalidWebViewOptions;
+            return;
+        }
         const index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
         if (!isValidWebViewFrame(frame)) return error.InvalidWebViewOptions;
         self.webviews[index].frame = frame;
@@ -675,6 +694,11 @@ pub const NullPlatform = struct {
 
     fn setWebViewZoom(context: ?*anyopaque, window_id: WindowId, label: []const u8, zoom: f64) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
+        if (std.mem.eql(u8, label, "main")) {
+            _ = self.findWindowIndex(window_id) orelse if (window_id == 1) 0 else return error.WindowNotFound;
+            if (zoom < 0.25 or zoom > 5.0) return error.InvalidWebViewOptions;
+            return;
+        }
         const index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
         if (zoom < 0.25 or zoom > 5.0) return error.InvalidWebViewOptions;
         self.webviews[index].zoom = zoom;
@@ -682,6 +706,10 @@ pub const NullPlatform = struct {
 
     fn setWebViewLayer(context: ?*anyopaque, window_id: WindowId, label: []const u8, layer: i32) anyerror!void {
         const self: *NullPlatform = @ptrCast(@alignCast(context.?));
+        if (std.mem.eql(u8, label, "main")) {
+            _ = self.findWindowIndex(window_id) orelse if (window_id == 1) 0 else return error.WindowNotFound;
+            return;
+        }
         const index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
         self.webviews[index].layer = layer;
     }
@@ -744,6 +772,10 @@ pub const NullPlatform = struct {
 
     pub fn lastBridgeResponseWindowId(self: *const NullPlatform) WindowId {
         return self.bridge_response_window_id;
+    }
+
+    pub fn lastBridgeResponseWebViewLabel(self: *const NullPlatform) []const u8 {
+        return self.bridge_response_webview_label;
     }
 };
 

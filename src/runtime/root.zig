@@ -202,7 +202,7 @@ pub const Runtime = struct {
     }
 
     pub fn respondToBridge(self: *Runtime, source: bridge.Source, response: []const u8) anyerror!void {
-        try self.completeBridgeResponse(source.window_id, response);
+        try self.completeBridgeResponse(source.window_id, source.webview_label, response);
     }
 
     pub fn dispatchPlatformEvent(self: *Runtime, app: App, event_value: platform.Event) anyerror!void {
@@ -352,6 +352,7 @@ pub const Runtime = struct {
             if (self.findWindowIndexById(window.id) == null) {
                 const runtime_index = try self.reserveWindow(window.id, window.label, window.resolvedTitle(app_info.app_name), source);
                 self.windows[runtime_index].info.frame = window.default_frame;
+                self.windows[runtime_index].main_frame = geometry.RectF.init(0, 0, window.default_frame.width, window.default_frame.height);
             }
             if (index > 0) {
                 _ = try self.options.platform.services.createWindow(window);
@@ -394,8 +395,8 @@ pub const Runtime = struct {
             self.invalidateFor(.command, null);
             return;
         }
-        const response = dispatcher.dispatch(message.bytes, .{ .origin = message.origin, .window_id = message.window_id }, &response_buffer);
-        try self.completeBridgeResponse(message.window_id, response);
+        const response = dispatcher.dispatch(message.bytes, .{ .origin = message.origin, .window_id = message.window_id, .webview_label = message.webview_label }, &response_buffer);
+        try self.completeBridgeResponse(message.window_id, message.webview_label, response);
         self.invalidateFor(.command, null);
         try self.log("bridge.dispatch", "bridge request handled", &.{
             trace.uint("request_bytes", message.bytes.len),
@@ -409,15 +410,15 @@ pub const Runtime = struct {
         if (!dispatcher.policy.allows(request.command, message.origin)) {
             var response_buffer: [bridge.max_response_bytes]u8 = undefined;
             const response = bridge.writeErrorResponse(&response_buffer, request.id, .permission_denied, "Bridge command is not permitted");
-            try self.completeBridgeResponse(message.window_id, response);
+            try self.completeBridgeResponse(message.window_id, message.webview_label, response);
             return true;
         }
         try handler.invoke_fn(handler.context, .{
             .request = request,
-            .source = .{ .origin = message.origin, .window_id = message.window_id },
+            .source = .{ .origin = message.origin, .window_id = message.window_id, .webview_label = message.webview_label },
         }, .{
             .context = self,
-            .source = .{ .origin = message.origin, .window_id = message.window_id },
+            .source = .{ .origin = message.origin, .window_id = message.window_id, .webview_label = message.webview_label },
             .respond_fn = asyncBridgeRespond,
         });
         return true;
@@ -444,7 +445,7 @@ pub const Runtime = struct {
                 self.invalidateFor(.command, null);
             },
             .bridge => {
-                try self.handleBridgeMessage(.{ .bytes = command.value, .origin = "zero://inline", .window_id = 1 });
+                try self.handleBridgeMessage(.{ .bytes = command.value, .origin = "zero://inline", .window_id = 1, .webview_label = "main" });
             },
             .wait => {},
         }
@@ -465,6 +466,9 @@ pub const Runtime = struct {
             .focused = self.window_count == 0,
         };
         self.windows[index].source = if (source) |source_value| try self.copySource(index, source_value) else null;
+        self.windows[index].main_frame = geometry.RectF.init(0, 0, self.windows[index].info.frame.width, self.windows[index].info.frame.height);
+        self.windows[index].main_frame_set = false;
+        self.windows[index].main_layer = 100;
         self.window_count += 1;
         self.next_window_id = @max(self.next_window_id, id + 1);
         return index;
@@ -492,6 +496,9 @@ pub const Runtime = struct {
         self.windows[index].info.scale_factor = native_info.scale_factor;
         self.windows[index].info.open = native_info.open;
         self.windows[index].info.focused = native_info.focused;
+        if (!self.windows[index].main_frame_set) {
+            self.windows[index].main_frame = geometry.RectF.init(0, 0, native_info.frame.width, native_info.frame.height);
+        }
         if (native_info.focused) self.setFocusedIndex(index);
     }
 
@@ -505,6 +512,9 @@ pub const Runtime = struct {
         if (state.title.len > 0) info.title = try copyInto(&self.windows[index].title_storage, state.title);
         if (state.label.len > 0 and !std.mem.eql(u8, state.label, info.label)) info.label = try copyInto(&self.windows[index].label_storage, state.label);
         self.windows[index].info = info;
+        if (!self.windows[index].main_frame_set) {
+            self.windows[index].main_frame = geometry.RectF.init(0, 0, state.frame.width, state.frame.height);
+        }
         if (!state.open) self.removeWebViewsForWindow(state.id);
         if (state.focused) self.setFocusedIndex(index);
     }
@@ -553,7 +563,7 @@ pub const Runtime = struct {
             else
                 "Dialog API is not permitted";
             const result = bridge.writeErrorResponse(&response_buffer, request.id, .permission_denied, message_text);
-            try self.completeBridgeResponse(message.window_id, result);
+            try self.completeBridgeResponse(message.window_id, message.webview_label, result);
             self.invalidateFor(.command, null);
             return true;
         }
@@ -564,13 +574,13 @@ pub const Runtime = struct {
         else
             self.dispatchDialogBridgeCommand(request, &result_buffer, &response_buffer);
 
-        try self.completeBridgeResponse(message.window_id, result);
+        try self.completeBridgeResponse(message.window_id, message.webview_label, result);
         self.invalidateFor(.command, null);
         return true;
     }
 
-    fn completeBridgeResponse(self: *Runtime, window_id: platform.WindowId, response: []const u8) anyerror!void {
-        try self.options.platform.services.completeWindowBridge(window_id, response);
+    fn completeBridgeResponse(self: *Runtime, window_id: platform.WindowId, webview_label: []const u8, response: []const u8) anyerror!void {
+        try self.options.platform.services.completeWebViewBridge(window_id, webview_label, response);
         if (self.options.automation) |server| {
             server.publishBridgeResponse(response) catch |err| try self.log("automation.bridge_response_failed", @errorName(err), &.{});
         }
@@ -748,11 +758,11 @@ pub const Runtime = struct {
         const url = jsonStringField(payload, "url", &storage) orelse return error.MissingWebViewUrl;
         const window_id = try webViewWindowIdFromJson(payload, source_window_id);
         const webview_frame = try webViewFrameFromJson(payload);
-        const layer = webViewLayerFromJson(payload);
+        const layer = try webViewLayerFromJson(payload);
         const transparent = jsonBoolField(payload, "transparent") orelse false;
         const bridge_enabled = jsonBoolField(payload, "bridge") orelse false;
         try self.validateWebViewParent(window_id);
-        try validateWebViewLabel(label);
+        try validateChildWebViewLabel(label);
         try self.validateWebViewUrl(url);
         if (self.findWebViewIndex(window_id, label) != null) return error.DuplicateWebViewLabel;
         if (self.webview_count >= platform.max_webviews) return error.WebViewLimitReached;
@@ -779,8 +789,11 @@ pub const Runtime = struct {
         try self.validateWebViewParent(window_id);
         try validateWebViewLabel(label);
         if (isMainWebViewLabel(label)) {
+            const window_index = self.findWindowIndexById(window_id) orelse return error.WindowNotFound;
             try self.options.platform.services.setWebViewFrame(window_id, label, webview_frame);
-            return writeImplicitMainWebViewJson(window_id, webview_frame, output);
+            self.windows[window_index].main_frame = webview_frame;
+            self.windows[window_index].main_frame_set = true;
+            return writeWebViewJson(self.mainWebViewInfo(window_index), output);
         }
         const webview_index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
         try self.options.platform.services.setWebViewFrame(window_id, label, webview_frame);
@@ -797,6 +810,7 @@ pub const Runtime = struct {
         try self.validateWebViewParent(window_id);
         try validateWebViewLabel(label);
         try self.validateWebViewUrl(url);
+        if (isMainWebViewLabel(label)) return error.InvalidWebViewOptions;
         const webview_index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
         try self.options.platform.services.navigateWebView(window_id, label, url);
         self.webviews[webview_index].url = try copyInto(&self.webviews[webview_index].url_storage, url);
@@ -814,9 +828,9 @@ pub const Runtime = struct {
         try self.validateWebViewParent(window_id);
         try validateWebViewLabel(label);
         if (isMainWebViewLabel(label)) {
-            const layer = webViewLayerFromJson(payload);
-            try self.options.platform.services.setWebViewLayer(window_id, label, layer);
-            return writeImplicitMainWebViewJson(window_id, geometry.RectF.init(0, 0, 0, 0), output);
+            const window_index = self.findWindowIndexById(window_id) orelse return error.WindowNotFound;
+            try self.options.platform.services.setWebViewZoom(window_id, label, zoom);
+            return writeWebViewJson(self.mainWebViewInfo(window_index), output);
         }
         const webview_index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
         try self.options.platform.services.setWebViewZoom(window_id, label, zoom);
@@ -830,9 +844,14 @@ pub const Runtime = struct {
         const window_id = try webViewWindowIdFromJson(payload, source_window_id);
         try self.validateWebViewParent(window_id);
         try validateWebViewLabel(label);
-        if (isMainWebViewLabel(label)) return error.InvalidWebViewOptions;
+        const layer = try webViewLayerFromJson(payload);
+        if (isMainWebViewLabel(label)) {
+            const window_index = self.findWindowIndexById(window_id) orelse return error.WindowNotFound;
+            try self.options.platform.services.setWebViewLayer(window_id, label, layer);
+            self.windows[window_index].main_layer = layer;
+            return writeWebViewJson(self.mainWebViewInfo(window_index), output);
+        }
         const webview_index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
-        const layer = webViewLayerFromJson(payload);
         try self.options.platform.services.setWebViewLayer(window_id, label, layer);
         self.webviews[webview_index].layer = layer;
         return writeWebViewJson(self.webviews[webview_index], output);
@@ -845,6 +864,7 @@ pub const Runtime = struct {
         const window_id = try webViewWindowIdFromJson(payload, source_window_id);
         try self.validateWebViewParent(window_id);
         try validateWebViewLabel(label);
+        if (isMainWebViewLabel(label)) return error.InvalidWebViewOptions;
         const webview_index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
         const closing = self.webviews[webview_index];
         try self.options.platform.services.closeWebView(window_id, label);
@@ -869,7 +889,8 @@ pub const Runtime = struct {
         try self.validateWebViewParent(source_window_id);
         var writer = std.Io.Writer.fixed(output);
         try writer.writeByte('[');
-        try writeImplicitMainWebViewJsonToWriter(source_window_id, geometry.RectF.init(0, 0, 0, 0), &writer);
+        const window_index = self.findWindowIndexById(source_window_id) orelse return error.WindowNotFound;
+        try writeWebViewJsonToWriter(self.mainWebViewInfo(window_index), &writer);
         var written: usize = 1;
         for (self.webviews[0..self.webview_count]) |webview| {
             if (webview.window_id != source_window_id or !webview.open) continue;
@@ -931,6 +952,21 @@ pub const Runtime = struct {
                 index += 1;
             }
         }
+    }
+
+    fn mainWebViewInfo(self: *const Runtime, window_index: usize) RuntimeWebView {
+        const window = self.windows[window_index];
+        const fallback_frame = geometry.RectF.init(0, 0, window.info.frame.width, window.info.frame.height);
+        return .{
+            .window_id = window.info.id,
+            .label = "main",
+            .url = sourceWebViewUrl(window.source),
+            .frame = if (window.main_frame_set) window.main_frame else fallback_frame,
+            .layer = window.main_layer,
+            .transparent = false,
+            .bridge_enabled = true,
+            .open = window.info.open,
+        };
     }
 
     fn focusWindowFromJson(self: *Runtime, payload: []const u8, output: []u8) ![]const u8 {
@@ -1009,6 +1045,9 @@ const RunContext = struct {
 const RuntimeWindow = struct {
     info: platform.WindowInfo = .{},
     source: ?platform.WebViewSource = null,
+    main_frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
+    main_frame_set: bool = false,
+    main_layer: i32 = 100,
     label_storage: [platform.max_window_label_bytes]u8 = undefined,
     title_storage: [platform.max_window_title_bytes]u8 = undefined,
     source_storage: [platform.max_window_source_bytes]u8 = undefined,
@@ -1033,6 +1072,14 @@ fn copyInto(buffer: []u8, value: []const u8) ![]const u8 {
     return buffer[0..value.len];
 }
 
+fn sourceWebViewUrl(source: ?platform.WebViewSource) []const u8 {
+    const value = source orelse return "";
+    return switch (value.kind) {
+        .html => "zero://inline",
+        .url, .assets => value.bytes,
+    };
+}
+
 fn writeWindowJson(window: platform.WindowInfo, output: []u8) ![]const u8 {
     var writer = std.Io.Writer.fixed(output);
     try writeWindowJsonToWriter(window, &writer);
@@ -1051,23 +1098,6 @@ fn writeWebViewJson(webview: RuntimeWebView, output: []u8) ![]const u8 {
     var writer = std.Io.Writer.fixed(output);
     try writeWebViewJsonToWriter(webview, &writer);
     return writer.buffered();
-}
-
-fn writeImplicitMainWebViewJson(window_id: platform.WindowId, frame: geometry.RectF, output: []u8) ![]const u8 {
-    var writer = std.Io.Writer.fixed(output);
-    try writeImplicitMainWebViewJsonToWriter(window_id, frame, &writer);
-    return writer.buffered();
-}
-
-fn writeImplicitMainWebViewJsonToWriter(window_id: platform.WindowId, frame: geometry.RectF, writer: anytype) !void {
-    try writer.writeAll("{\"label\":\"main\",\"windowId\":");
-    try writer.print("{d}", .{window_id});
-    try writer.print(",\"url\":\"\",\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d},\"layer\":100,\"transparent\":false,\"bridge\":true,\"open\":true}}", .{
-        frame.x,
-        frame.y,
-        frame.width,
-        frame.height,
-    });
 }
 
 fn writeWebViewJsonToWriter(webview: RuntimeWebView, writer: anytype) !void {
@@ -1124,6 +1154,7 @@ fn builtinBridgeErrorMessage(err: anyerror) []const u8 {
         error.WebViewNotFound => "WebView was not found",
         error.WebViewLimitReached => "WebView limit reached",
         error.DuplicateWebViewLabel => "WebView label already exists",
+        error.ReservedWebViewLabel => "WebView label \"main\" is reserved for the startup WebView",
         error.WebViewLabelTooLarge => "WebView label is too large",
         error.WebViewUrlTooLarge => "WebView URL is too large",
         error.NavigationDenied => "WebView URL is not allowed by navigation policy",
@@ -1145,6 +1176,7 @@ fn builtinBridgeErrorCode(err: anyerror) bridge.ErrorCode {
         error.WebViewNotFound,
         error.WebViewLimitReached,
         error.DuplicateWebViewLabel,
+        error.ReservedWebViewLabel,
         error.WebViewLabelTooLarge,
         error.WebViewUrlTooLarge,
         => .invalid_request,
@@ -1178,10 +1210,14 @@ fn webViewFrameFromJson(payload: []const u8) !geometry.RectF {
     return frame;
 }
 
-fn webViewLayerFromJson(payload: []const u8) i32 {
-    const layer_value = jsonNumberField(payload, "layer") orelse 0;
-    if (layer_value > 2147483000.0) return 2147483000;
-    if (layer_value < -2147483000.0) return -2147483000;
+fn webViewLayerFromJson(payload: []const u8) !i32 {
+    if (json.fieldValue(payload, "layer") == null) return 0;
+    const layer_value = jsonNumberField(payload, "layer") orelse return error.InvalidWebViewOptions;
+    if (!std.math.isFinite(layer_value)) return error.InvalidWebViewOptions;
+    const max_layer: f32 = @floatFromInt(std.math.maxInt(i32));
+    const min_layer: f32 = @floatFromInt(std.math.minInt(i32));
+    if (layer_value > max_layer) return std.math.maxInt(i32);
+    if (layer_value < min_layer) return std.math.minInt(i32);
     return @as(i32, @intFromFloat(layer_value));
 }
 
@@ -1192,6 +1228,11 @@ fn isMainWebViewLabel(label: []const u8) bool {
 fn validateWebViewLabel(label: []const u8) !void {
     if (label.len == 0) return error.InvalidWebViewOptions;
     if (label.len > platform.max_webview_label_bytes) return error.WebViewLabelTooLarge;
+}
+
+fn validateChildWebViewLabel(label: []const u8) !void {
+    try validateWebViewLabel(label);
+    if (isMainWebViewLabel(label)) return error.ReservedWebViewLabel;
 }
 
 fn webViewUrlOrigin(url: []const u8, buffer: []u8) ![]const u8 {
@@ -1556,10 +1597,44 @@ test "runtime handles built-in JavaScript webview bridge commands" {
         .origin = "zero://inline",
         .window_id = 1,
     } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"label\":\"main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"url\":\"zero://inline\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"layer\":10") != null);
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
-        .bytes = "{\"id\":\"7\",\"command\":\"zero-native.webview.close\",\"payload\":{\"label\":\"preview\"}}",
+        .bytes = "{\"id\":\"7\",\"command\":\"zero-native.webview.setFrame\",\"payload\":{\"label\":\"main\",\"frame\":{\"x\":0,\"y\":0,\"width\":640,\"height\":80}}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"label\":\"main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"height\":80") != null);
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"8\",\"command\":\"zero-native.webview.setZoom\",\"payload\":{\"label\":\"main\",\"zoom\":1.1}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"label\":\"main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"height\":80") != null);
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"9\",\"command\":\"zero-native.webview.list\",\"payload\":{}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+        .webview_label = "preview",
+    } });
+    try std.testing.expectEqualStrings("preview", harness.null_platform.lastBridgeResponseWebViewLabel());
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"9\",\"command\":\"zero-native.webview.list\",\"payload\":{}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+        .webview_label = "main",
+    } });
+    try std.testing.expectEqualStrings("main", harness.null_platform.lastBridgeResponseWebViewLabel());
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"10\",\"command\":\"zero-native.webview.close\",\"payload\":{\"label\":\"preview\"}}",
         .origin = "zero://inline",
         .window_id = 1,
     } });
@@ -1627,6 +1702,22 @@ test "runtime validates webview bridge commands" {
 
     try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
         .bytes = "{\"id\":\"invalid-frame\",\"command\":\"zero-native.webview.create\",\"payload\":{\"label\":\"preview\",\"url\":\"https://example.com\",\"frame\":{\"width\":0,\"height\":200}}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "WebView options are invalid") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"reserved-label\",\"command\":\"zero-native.webview.create\",\"payload\":{\"label\":\"main\",\"url\":\"https://example.com\",\"frame\":{\"width\":300,\"height\":200}}}",
+        .origin = "zero://inline",
+        .window_id = 1,
+    } });
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "reserved") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness.null_platform.lastBridgeResponse(), "\"invalid_request\"") != null);
+
+    try harness.runtime.dispatchPlatformEvent(app_state.app(), .{ .bridge_message = .{
+        .bytes = "{\"id\":\"invalid-layer\",\"command\":\"zero-native.webview.create\",\"payload\":{\"label\":\"bad-layer\",\"url\":\"https://example.com\",\"frame\":{\"width\":300,\"height\":200},\"layer\":1e1000}}",
         .origin = "zero://inline",
         .window_id = 1,
     } });

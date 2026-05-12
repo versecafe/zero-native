@@ -37,7 +37,7 @@ const WindowsEvent = extern struct {
 };
 
 const WindowsCallback = *const fn (context: ?*anyopaque, event: *const WindowsEvent) callconv(.c) void;
-const WindowsBridgeCallback = *const fn (context: ?*anyopaque, window_id: u64, message: [*]const u8, message_len: usize, origin: [*]const u8, origin_len: usize) callconv(.c) void;
+const WindowsBridgeCallback = *const fn (context: ?*anyopaque, window_id: u64, webview_label: [*]const u8, webview_label_len: usize, message: [*]const u8, message_len: usize, origin: [*]const u8, origin_len: usize) callconv(.c) void;
 
 extern fn zero_native_windows_create(app_name: [*]const u8, app_name_len: usize, window_title: [*]const u8, window_title_len: usize, bundle_id: [*]const u8, bundle_id_len: usize, icon_path: [*]const u8, icon_path_len: usize, window_label: [*]const u8, window_label_len: usize, x: f64, y: f64, width: f64, height: f64, restore_frame: c_int) ?*WindowsHost;
 extern fn zero_native_windows_destroy(host: *WindowsHost) void;
@@ -48,6 +48,7 @@ extern fn zero_native_windows_load_window_webview(host: *WindowsHost, window_id:
 extern fn zero_native_windows_set_bridge_callback(host: *WindowsHost, callback: WindowsBridgeCallback, context: ?*anyopaque) void;
 extern fn zero_native_windows_bridge_respond(host: *WindowsHost, response: [*]const u8, response_len: usize) void;
 extern fn zero_native_windows_bridge_respond_window(host: *WindowsHost, window_id: u64, response: [*]const u8, response_len: usize) void;
+extern fn zero_native_windows_bridge_respond_webview(host: *WindowsHost, window_id: u64, webview_label: [*]const u8, webview_label_len: usize, response: [*]const u8, response_len: usize) void;
 extern fn zero_native_windows_emit_window_event(host: *WindowsHost, window_id: u64, name: [*]const u8, name_len: usize, detail_json: [*]const u8, detail_json_len: usize) void;
 extern fn zero_native_windows_set_security_policy(host: *WindowsHost, allowed_origins: [*]const u8, allowed_origins_len: usize, external_urls: [*]const u8, external_urls_len: usize, external_action: c_int) void;
 extern fn zero_native_windows_create_window(host: *WindowsHost, window_id: u64, window_title: [*]const u8, window_title_len: usize, window_label: [*]const u8, window_label_len: usize, x: f64, y: f64, width: f64, height: f64, restore_frame: c_int) c_int;
@@ -112,6 +113,7 @@ pub const WindowsPlatform = struct {
                 .load_window_webview_fn = loadWindowWebView,
                 .complete_bridge_fn = completeBridge,
                 .complete_window_bridge_fn = completeWindowBridge,
+                .complete_webview_bridge_fn = completeWebViewBridge,
                 .create_window_fn = createWindow,
                 .focus_window_fn = focusWindow,
                 .close_window_fn = closeWindow,
@@ -201,12 +203,13 @@ fn windowsCallback(context: ?*anyopaque, event: *const WindowsEvent) callconv(.c
     }
 }
 
-fn windowsBridgeCallback(context: ?*anyopaque, window_id: u64, message: [*]const u8, message_len: usize, origin: [*]const u8, origin_len: usize) callconv(.c) void {
+fn windowsBridgeCallback(context: ?*anyopaque, window_id: u64, webview_label: [*]const u8, webview_label_len: usize, message: [*]const u8, message_len: usize, origin: [*]const u8, origin_len: usize) callconv(.c) void {
     const state: *RunState = @ptrCast(@alignCast(context.?));
     state.emit(.{ .bridge_message = .{
         .bytes = message[0..message_len],
         .origin = origin[0..origin_len],
         .window_id = window_id,
+        .webview_label = webview_label[0..webview_label_len],
     } });
 }
 
@@ -255,6 +258,11 @@ fn completeBridge(context: ?*anyopaque, response: []const u8) anyerror!void {
 fn completeWindowBridge(context: ?*anyopaque, window_id: platform_mod.WindowId, response: []const u8) anyerror!void {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
     zero_native_windows_bridge_respond_window(self.host, window_id, response.ptr, response.len);
+}
+
+fn completeWebViewBridge(context: ?*anyopaque, window_id: platform_mod.WindowId, webview_label: []const u8, response: []const u8) anyerror!void {
+    const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
+    zero_native_windows_bridge_respond_webview(self.host, window_id, webview_label.ptr, webview_label.len, response.ptr, response.len);
 }
 
 fn emitWindowEvent(context: ?*anyopaque, window_id: platform_mod.WindowId, name: []const u8, detail_json: []const u8) anyerror!void {

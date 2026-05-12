@@ -27,6 +27,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 @interface ZeroNativeBridgeScriptHandler : NSObject <WKScriptMessageHandler>
 @property(nonatomic, assign) ZeroNativeAppKitHost *host;
 @property(nonatomic, assign) uint64_t windowId;
+@property(nonatomic, strong) NSString *webViewLabel;
 @end
 
 @interface ZeroNativeAssetSchemeHandler : NSObject <WKURLSchemeHandler>
@@ -98,9 +99,10 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 - (void)setAllowedNavigationOrigins:(NSArray<NSString *> *)origins externalURLs:(NSArray<NSString *> *)externalURLs externalAction:(NSInteger)externalAction;
 - (BOOL)allowsNavigationURL:(NSURL *)url;
 - (BOOL)openExternalURLIfAllowed:(NSURL *)url;
-- (void)receiveBridgeMessage:(WKScriptMessage *)message windowId:(uint64_t)windowId;
+- (void)receiveBridgeMessage:(WKScriptMessage *)message windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel;
 - (void)completeBridgeWithResponse:(NSString *)response;
 - (void)completeBridgeWithResponse:(NSString *)response windowId:(uint64_t)windowId;
+- (void)completeBridgeWithResponse:(NSString *)response windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel;
 - (void)emitEventNamed:(NSString *)name detailJSON:(NSString *)detailJSON windowId:(uint64_t)windowId;
 @end
 
@@ -148,7 +150,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
     (void)userContentController;
-    [self.host receiveBridgeMessage:message windowId:self.windowId];
+    [self.host receiveBridgeMessage:message windowId:self.windowId webViewLabel:self.webViewLabel ?: @"main"];
 }
 
 @end
@@ -271,6 +273,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     ZeroNativeBridgeScriptHandler *bridgeScriptHandler = [[ZeroNativeBridgeScriptHandler alloc] init];
     bridgeScriptHandler.host = self;
     bridgeScriptHandler.windowId = windowId;
+    bridgeScriptHandler.webViewLabel = @"main";
     [userContentController addScriptMessageHandler:bridgeScriptHandler name:@"zeroNativeBridge"];
     WKUserScript *bridgeScript = [[WKUserScript alloc] initWithSource:ZeroNativeAppKitBridgeScript()
                                                         injectionTime:WKUserScriptInjectionTimeAtDocumentStart
@@ -374,6 +377,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
         ZeroNativeBridgeScriptHandler *handler = [[ZeroNativeBridgeScriptHandler alloc] init];
         handler.host = self;
         handler.windowId = windowId;
+        handler.webViewLabel = label;
         [controller addScriptMessageHandler:handler name:@"zeroNativeBridge"];
         [controller addUserScript:[[WKUserScript alloc] initWithSource:ZeroNativeAppKitBridgeScript() injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO]];
         configuration.userContentController = controller;
@@ -421,8 +425,16 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 
 - (BOOL)navigateWebViewInWindow:(uint64_t)windowId label:(NSString *)label url:(NSString *)url {
     if (label.length == 0 || url.length == 0) return NO;
-    WKWebView *webview = self.childWebViews[[self webViewKeyForWindow:windowId label:label]];
     NSURL *targetURL = [NSURL URLWithString:url ?: @""];
+    if ([label isEqualToString:@"main"]) {
+        WKWebView *webView = [self webViewForWindowId:windowId];
+        if (!webView || !targetURL) return NO;
+        if (![self allowsNavigationURL:targetURL]) return NO;
+        [webView loadRequest:[NSURLRequest requestWithURL:targetURL]];
+        [self scheduleBridgeFrames];
+        return YES;
+    }
+    WKWebView *webview = self.childWebViews[[self webViewKeyForWindow:windowId label:label]];
     if (!webview || !targetURL) return NO;
     if (![self allowsNavigationURL:targetURL]) return NO;
     [webview loadRequest:[NSURLRequest requestWithURL:targetURL]];
@@ -432,6 +444,12 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 
 - (BOOL)setWebViewZoomInWindow:(uint64_t)windowId label:(NSString *)label zoom:(double)zoom {
     if (label.length == 0 || zoom < 0.25 || zoom > 5.0) return NO;
+    if ([label isEqualToString:@"main"]) {
+        WKWebView *webView = [self webViewForWindowId:windowId];
+        if (!webView) return NO;
+        webView.pageZoom = zoom;
+        return YES;
+    }
     WKWebView *webview = self.childWebViews[[self webViewKeyForWindow:windowId label:label]];
     if (!webview) return NO;
     webview.pageZoom = zoom;
@@ -877,7 +895,7 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
     return [NSString stringWithFormat:@"%@://%@", securityOrigin.protocol, securityOrigin.host];
 }
 
-- (void)receiveBridgeMessage:(WKScriptMessage *)message windowId:(uint64_t)windowId {
+- (void)receiveBridgeMessage:(WKScriptMessage *)message windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel {
     if (!self.bridgeCallback) {
         return;
     }
@@ -898,22 +916,28 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
     NSString *origin = [self bridgeOriginForMessage:message];
     NSData *messageData = [messageString dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
     NSData *originData = [origin dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
-    self.bridgeCallback(self.bridgeContext, windowId, (const char *)messageData.bytes, messageData.length, (const char *)originData.bytes, originData.length);
+    NSData *labelData = [(webViewLabel.length > 0 ? webViewLabel : @"main") dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+    self.bridgeCallback(self.bridgeContext, windowId, (const char *)labelData.bytes, labelData.length, (const char *)messageData.bytes, messageData.length, (const char *)originData.bytes, originData.length);
     [self scheduleFrame];
 }
 
 - (void)completeBridgeWithResponse:(NSString *)response {
-    [self completeBridgeWithResponse:response windowId:1];
+    [self completeBridgeWithResponse:response windowId:1 webViewLabel:@"main"];
 }
 
 - (void)completeBridgeWithResponse:(NSString *)response windowId:(uint64_t)windowId {
+    [self completeBridgeWithResponse:response windowId:windowId webViewLabel:@"main"];
+}
+
+- (void)completeBridgeWithResponse:(NSString *)response windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel {
     WKWebView *webView = [self webViewForWindowId:windowId];
     NSString *script = [NSString stringWithFormat:@"window.zero&&window.zero._complete(%@);", response.length > 0 ? response : @"{}"];
-    [webView evaluateJavaScript:script completionHandler:nil];
-    NSString *prefix = [NSString stringWithFormat:@"%llu:", windowId];
-    for (NSString *key in self.childWebViews) {
-        if (![key hasPrefix:prefix]) continue;
-        [self.childWebViews[key] evaluateJavaScript:script completionHandler:nil];
+    NSString *label = webViewLabel.length > 0 ? webViewLabel : @"main";
+    if ([label isEqualToString:@"main"]) {
+        [webView evaluateJavaScript:script completionHandler:nil];
+    } else {
+        WKWebView *child = self.childWebViews[[self webViewKeyForWindow:windowId label:label]];
+        [child evaluateJavaScript:script completionHandler:nil];
     }
     [self scheduleBridgeFrames];
 }
@@ -1059,6 +1083,13 @@ void zero_native_appkit_bridge_respond_window(zero_native_appkit_host_t *host, u
     ZeroNativeAppKitHost *object = (__bridge ZeroNativeAppKitHost *)host;
     NSString *responseString = response ? [[NSString alloc] initWithBytes:response length:response_len encoding:NSUTF8StringEncoding] : @"{}";
     [object completeBridgeWithResponse:responseString ?: @"{}" windowId:window_id];
+}
+
+void zero_native_appkit_bridge_respond_webview(zero_native_appkit_host_t *host, uint64_t window_id, const char *webview_label, size_t webview_label_len, const char *response, size_t response_len) {
+    ZeroNativeAppKitHost *object = (__bridge ZeroNativeAppKitHost *)host;
+    NSString *labelString = webview_label ? [[NSString alloc] initWithBytes:webview_label length:webview_label_len encoding:NSUTF8StringEncoding] : @"main";
+    NSString *responseString = response ? [[NSString alloc] initWithBytes:response length:response_len encoding:NSUTF8StringEncoding] : @"{}";
+    [object completeBridgeWithResponse:responseString ?: @"{}" windowId:window_id webViewLabel:labelString ?: @"main"];
 }
 
 void zero_native_appkit_emit_window_event(zero_native_appkit_host_t *host, uint64_t window_id, const char *name, size_t name_len, const char *detail_json, size_t detail_json_len) {

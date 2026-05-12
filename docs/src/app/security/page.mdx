@@ -123,9 +123,7 @@ zero-native provides built-in commands for windows (`zero-native.window.*`), lay
 
 `js_window_api` exposes the JavaScript window and WebView helpers, but it does not bypass security. Window commands (`zero-native.window.list`, `create`, `focus`, `close`) and WebView commands (`zero-native.webview.create`, `list`, `setFrame`, `navigate`, `setZoom`, `setLayer`, `close`) must come from an allowed origin and must have the `window` permission when runtime permissions are configured. WebView commands can only target the window that sent the bridge message. WebView URLs must also be allowed by `security.navigation.allowed_origins`, and child WebViews receive `window.zero` only when created with `bridge: true`.
 
-For broader control, use an explicit `builtin_bridge` policy. When you choose this path, list every built-in command your app calls:
-
-Dialog commands (`zero-native.dialog.openFile`, `saveFile`, `showMessage`) are **always default-deny** and require an explicit `builtin_bridge` policy with the command listed:
+For broader control, use an explicit `builtin_bridge` policy. When you choose this path, list every built-in command your app calls. Dialog commands (`zero-native.dialog.openFile`, `saveFile`, `showMessage`) are **always default-deny** and require an explicit `builtin_bridge` policy with the command listed:
 
 ```zig
 .builtin_bridge = .{
@@ -159,7 +157,7 @@ When a bridge call fails, the JavaScript promise rejects with an error containin
   <tbody>
     <tr>
       <td><code>invalid_request</code></td>
-      <td>Malformed JSON message</td>
+      <td>Malformed input, unsupported built-in operation, denied navigation URL, missing window/WebView, duplicate or reserved WebView label, or another caller-fixable request problem</td>
     </tr>
     <tr>
       <td><code>unknown_command</code></td>
