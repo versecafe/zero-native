@@ -501,7 +501,7 @@ pub const Runtime = struct {
         self.windows[index].source = if (source) |source_value| try self.copySource(index, source_value) else null;
         self.windows[index].main_frame = geometry.RectF.init(0, 0, self.windows[index].info.frame.width, self.windows[index].info.frame.height);
         self.windows[index].main_frame_set = false;
-        self.windows[index].main_layer = 100;
+        self.windows[index].main_layer = 0;
         self.windows[index].main_zoom = 1.0;
         self.window_count += 1;
         self.next_window_id = @max(self.next_window_id, id + 1);
@@ -809,8 +809,15 @@ pub const Runtime = struct {
             .transparent = transparent,
             .bridge_enabled = bridge_enabled,
         });
-        errdefer self.options.platform.services.closeWebView(window_id, label) catch {};
+        var reserved = false;
+        errdefer {
+            if (reserved) {
+                if (self.findWebViewIndex(window_id, label)) |index| self.removeWebViewAt(index);
+            }
+            self.options.platform.services.closeWebView(window_id, label) catch {};
+        }
         try self.reserveWebView(window_id, label, url, webview_frame, layer, transparent, bridge_enabled);
+        reserved = true;
         return writeWebViewJson(self.webviews[self.webview_count - 1], output);
     }
 
@@ -902,8 +909,10 @@ pub const Runtime = struct {
         try validateWebViewLabel(label);
         if (isMainWebViewLabel(label)) return error.InvalidWebViewOptions;
         const webview_index = self.findWebViewIndex(window_id, label) orelse return error.WebViewNotFound;
+        var closed_info = self.webviews[webview_index];
+        closed_info.open = false;
+        const result = try writeWebViewJson(closed_info, output);
         try self.options.platform.services.closeWebView(window_id, label);
-        const result = try writeWebViewJson(self.webviews[webview_index], output);
         self.removeWebViewAt(webview_index);
         return result;
     }
@@ -1085,7 +1094,7 @@ const RuntimeWindow = struct {
     source: ?platform.WebViewSource = null,
     main_frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
     main_frame_set: bool = false,
-    main_layer: i32 = 100,
+    main_layer: i32 = 0,
     main_zoom: f64 = 1.0,
     label_storage: [platform.max_window_label_bytes]u8 = undefined,
     title_storage: [platform.max_window_title_bytes]u8 = undefined,

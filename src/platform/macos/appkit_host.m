@@ -337,6 +337,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
     container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     WKWebView *webView = [[ZeroNativeWebView alloc] initWithFrame:container.bounds configuration:configuration];
     webView.wantsLayer = YES;
+    webView.layer.zPosition = 0;
     webView.layer.backgroundColor = NSColor.clearColor.CGColor;
     [webView setValue:@NO forKey:@"drawsBackground"];
     if ([webView respondsToSelector:NSSelectorFromString(@"setInspectable:")]) {

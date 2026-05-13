@@ -68,7 +68,7 @@ private:
 class ZeroNativeCefClient final : public CefClient, public CefLifeSpanHandler, public CefLoadHandler, public CefRequestHandler {
 public:
     explicit ZeroNativeCefClient(ZeroNativeChromiumHost *host, uint64_t window_id) : host_(host), window_id_(window_id) {}
-    ZeroNativeCefClient(ZeroNativeChromiumHost *host, uint64_t window_id, std::string webview_key, bool bridge_enabled) : host_(host), window_id_(window_id), webview_key_(webview_key), bridge_enabled_(bridge_enabled) {}
+    ZeroNativeCefClient(ZeroNativeChromiumHost *host, uint64_t window_id, std::string webview_key, uint64_t webview_generation, bool bridge_enabled) : host_(host), window_id_(window_id), webview_key_(webview_key), webview_generation_(webview_generation), bridge_enabled_(bridge_enabled) {}
 
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override {
         return this;
@@ -97,6 +97,7 @@ private:
     ZeroNativeChromiumHost *host_;
     uint64_t window_id_;
     std::string webview_key_;
+    uint64_t webview_generation_ = 0;
     bool bridge_enabled_ = true;
     IMPLEMENT_REFCOUNTING(ZeroNativeCefClient);
 };
@@ -377,7 +378,9 @@ static const char *ZeroNativeCefBridgeScript() {
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSView *> *webviewViews;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *webviewPendingURLs;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *webviewPendingZooms;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *webviewGenerations;
 @property(nonatomic, strong) NSMutableSet<NSString *> *closingWebViewKeys;
+@property(nonatomic, assign) uint64_t nextWebViewGeneration;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong) NSString *appName;
 @property(nonatomic, assign) zero_native_appkit_event_callback_t callback;
@@ -428,8 +431,10 @@ static const char *ZeroNativeCefBridgeScript() {
 - (NSView *)stackViewForWindowId:(uint64_t)windowId;
 - (void)reorderWebViewsInWindow:(uint64_t)windowId;
 - (void)setBrowser:(CefRefPtr<CefBrowser>)browser windowId:(uint64_t)windowId;
-- (void)setWebViewBrowser:(CefRefPtr<CefBrowser>)browser key:(NSString *)key;
+- (BOOL)webViewGeneration:(uint64_t)generation matchesKey:(NSString *)key;
+- (void)setWebViewBrowser:(CefRefPtr<CefBrowser>)browser key:(NSString *)key generation:(uint64_t)generation;
 - (void)cleanupClosedWebViewWithKey:(NSString *)key;
+- (void)cleanupClosedWebViewWithKey:(NSString *)key generation:(uint64_t)generation;
 - (NSString *)fallbackURLForWindowId:(uint64_t)windowId;
 - (NSString *)bridgeOriginForWindowId:(uint64_t)windowId sourceURL:(NSString *)sourceURL;
 - (void)receiveBridgePayload:(NSString *)payload origin:(NSString *)origin windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel;
@@ -501,7 +506,9 @@ static const char *ZeroNativeCefBridgeScript() {
     self.webviewViews = [[NSMutableDictionary alloc] init];
     self.webviewPendingURLs = [[NSMutableDictionary alloc] init];
     self.webviewPendingZooms = [[NSMutableDictionary alloc] init];
+    self.webviewGenerations = [[NSMutableDictionary alloc] init];
     self.closingWebViewKeys = [[NSMutableSet alloc] init];
+    self.nextWebViewGeneration = 1;
     self.cefClients = new std::map<uint64_t, CefRefPtr<ZeroNativeCefClient>>();
     self.browsers = new std::map<uint64_t, CefRefPtr<CefBrowser>>();
     self.webviewCefClients = new std::map<std::string, CefRefPtr<ZeroNativeCefClient>>();
@@ -623,6 +630,7 @@ static const char *ZeroNativeCefBridgeScript() {
     NSView *browserContainer = [[NSView alloc] initWithFrame:stackRoot.bounds];
     browserContainer.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     browserContainer.wantsLayer = YES;
+    browserContainer.layer.zPosition = 0;
     [stackRoot addSubview:browserContainer positioned:NSWindowAbove relativeTo:nil];
 
     ZeroNativeChromiumWindowDelegate *delegate = [[ZeroNativeChromiumWindowDelegate alloc] init];
@@ -867,10 +875,13 @@ static const char *ZeroNativeCefBridgeScript() {
     if (transparent) webview.layer.backgroundColor = NSColor.clearColor.CGColor;
     [stackView addSubview:webview positioned:NSWindowAbove relativeTo:nil];
     self.webviewViews[key] = webview;
+    uint64_t generation = self.nextWebViewGeneration++;
+    if (self.nextWebViewGeneration == 0) self.nextWebViewGeneration = 1;
+    self.webviewGenerations[key] = @(generation);
     [self reorderWebViewsInWindow:windowId];
 
     std::string keyString(key.UTF8String);
-    CefRefPtr<ZeroNativeCefClient> client = new ZeroNativeCefClient(self, windowId, keyString, bridgeEnabled);
+    CefRefPtr<ZeroNativeCefClient> client = new ZeroNativeCefClient(self, windowId, keyString, generation, bridgeEnabled);
     if (self.webviewCefClients) (*self.webviewCefClients)[keyString] = client;
     CefWindowInfo windowInfo;
     CefRect rect(0, 0, webview.bounds.size.width, webview.bounds.size.height);
@@ -992,13 +1003,14 @@ static const char *ZeroNativeCefBridgeScript() {
     [self.closingWebViewKeys addObject:key];
     [self.webviewPendingURLs removeObjectForKey:key];
     [self.webviewPendingZooms removeObjectForKey:key];
+    CefRefPtr<CefBrowser> browser;
     if (self.webviewBrowsers) {
         auto browser_it = self.webviewBrowsers->find(keyString);
         if (browser_it != self.webviewBrowsers->end() && browser_it->second) {
-            browser_it->second->GetHost()->CloseBrowser(true);
-            return YES;
+            browser = browser_it->second;
         }
     }
+    if (browser) browser->GetHost()->CloseBrowser(true);
     [self cleanupClosedWebViewWithKey:key];
     return YES;
 }
@@ -1088,9 +1100,14 @@ static const char *ZeroNativeCefBridgeScript() {
     if (windowId == 1) self.browser = browser;
 }
 
-- (void)setWebViewBrowser:(CefRefPtr<CefBrowser>)browser key:(NSString *)key {
+- (BOOL)webViewGeneration:(uint64_t)generation matchesKey:(NSString *)key {
+    NSNumber *current = self.webviewGenerations[key];
+    return current && current.unsignedLongLongValue == generation;
+}
+
+- (void)setWebViewBrowser:(CefRefPtr<CefBrowser>)browser key:(NSString *)key generation:(uint64_t)generation {
     if (!self.webviewBrowsers || key.length == 0) return;
-    if ([self.closingWebViewKeys containsObject:key]) {
+    if (![self webViewGeneration:generation matchesKey:key] || [self.closingWebViewKeys containsObject:key]) {
         if (browser) browser->GetHost()->CloseBrowser(true);
         return;
     }
@@ -1114,9 +1131,15 @@ static const char *ZeroNativeCefBridgeScript() {
     if (self.webviewCefClients) self.webviewCefClients->erase(keyString);
     [self.webviewPendingURLs removeObjectForKey:key];
     [self.webviewPendingZooms removeObjectForKey:key];
+    [self.webviewGenerations removeObjectForKey:key];
     [self.webviewViews[key] removeFromSuperview];
     [self.webviewViews removeObjectForKey:key];
     [self.closingWebViewKeys removeObject:key];
+}
+
+- (void)cleanupClosedWebViewWithKey:(NSString *)key generation:(uint64_t)generation {
+    if (![self webViewGeneration:generation matchesKey:key]) return;
+    [self cleanupClosedWebViewWithKey:key];
 }
 
 - (NSString *)fallbackURLForWindowId:(uint64_t)windowId {
@@ -1229,7 +1252,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 void ZeroNativeCefClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     if (!webview_key_.empty()) {
         NSString *key = [[NSString alloc] initWithBytes:webview_key_.data() length:webview_key_.size() encoding:NSUTF8StringEncoding];
-        [host_ setWebViewBrowser:browser key:key ?: @""];
+        [host_ setWebViewBrowser:browser key:key ?: @"" generation:webview_generation_];
         return;
     }
     [host_ setBrowser:browser windowId:window_id_];
@@ -1239,7 +1262,7 @@ void ZeroNativeCefClient::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
     (void)browser;
     if (webview_key_.empty()) return;
     NSString *key = [[NSString alloc] initWithBytes:webview_key_.data() length:webview_key_.size() encoding:NSUTF8StringEncoding];
-    [host_ cleanupClosedWebViewWithKey:key ?: @""];
+    [host_ cleanupClosedWebViewWithKey:key ?: @"" generation:webview_generation_];
 }
 
 void ZeroNativeCefClient::OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode errorCode, const CefString& errorText, const CefString& failedUrl) {
