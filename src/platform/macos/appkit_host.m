@@ -61,6 +61,7 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 @property(nonatomic, assign) void *bridgeContext;
 @property(nonatomic, assign) BOOL didShutdown;
 @property(nonatomic, assign) NSInteger bridgeFrameKeepalive;
+@property(nonatomic, strong) id shortcutEventMonitor;
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, assign) zero_native_appkit_tray_callback_t trayCallback;
 @property(nonatomic, assign) void *trayContext;
@@ -99,11 +100,13 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 - (void)setAllowedNavigationOrigins:(NSArray<NSString *> *)origins externalURLs:(NSArray<NSString *> *)externalURLs externalAction:(NSInteger)externalAction;
 - (BOOL)allowsNavigationURL:(NSURL *)url;
 - (BOOL)openExternalURLIfAllowed:(NSURL *)url;
+- (void)emitNavigationForWebView:(WKWebView *)webView url:(NSURL *)url;
 - (void)receiveBridgeMessage:(WKScriptMessage *)message windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel;
 - (void)completeBridgeWithResponse:(NSString *)response;
 - (void)completeBridgeWithResponse:(NSString *)response windowId:(uint64_t)windowId;
 - (void)completeBridgeWithResponse:(NSString *)response windowId:(uint64_t)windowId webViewLabel:(NSString *)webViewLabel;
 - (void)emitEventNamed:(NSString *)name detailJSON:(NSString *)detailJSON windowId:(uint64_t)windowId;
+- (BOOL)handleShortcutEvent:(NSEvent *)event;
 @end
 
 @implementation ZeroNativeWindowDelegate
@@ -323,6 +326,10 @@ static BOOL ZeroNativePolicyListMatches(NSArray<NSString *> *values, NSURL *url)
 }
 
 - (void)dealloc {
+    if (self.shortcutEventMonitor) {
+        [NSEvent removeMonitor:self.shortcutEventMonitor];
+        self.shortcutEventMonitor = nil;
+    }
     for (WKWebView *webView in self.webViews.allValues) {
         [webView.configuration.userContentController removeScriptMessageHandlerForName:@"zeroNativeBridge"];
     }
@@ -721,6 +728,14 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
 
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activate];
+    if (!self.shortcutEventMonitor) {
+        __weak ZeroNativeAppKitHost *weakSelf = self;
+        self.shortcutEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event) {
+            ZeroNativeAppKitHost *strongSelf = weakSelf;
+            if (strongSelf && [strongSelf handleShortcutEvent:event]) return nil;
+            return event;
+        }];
+    }
 
     [self emitEvent:(zero_native_appkit_event_t){ .kind = ZERO_NATIVE_APPKIT_EVENT_START }];
     [self emitResize];
@@ -733,6 +748,10 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
 - (void)stop {
     [self.timer invalidate];
     self.timer = nil;
+    if (self.shortcutEventMonitor) {
+        [NSEvent removeMonitor:self.shortcutEventMonitor];
+        self.shortcutEventMonitor = nil;
+    }
     [NSApp stop:nil];
     NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
                                         location:NSZeroPoint
@@ -865,11 +884,38 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
     return YES;
 }
 
+- (void)emitNavigationForWebView:(WKWebView *)webView url:(NSURL *)url {
+    if (!webView || !url) return;
+    uint64_t windowId = 1;
+    NSString *label = @"main";
+    for (NSNumber *key in self.webViews) {
+        if (self.webViews[key] != webView) continue;
+        windowId = key.unsignedLongLongValue;
+        label = @"main";
+        break;
+    }
+    for (NSString *key in self.childWebViews) {
+        if (self.childWebViews[key] != webView) continue;
+        NSRange separator = [key rangeOfString:@":"];
+        if (separator.location != NSNotFound) {
+            windowId = (uint64_t)[[key substringToIndex:separator.location] longLongValue];
+            label = [key substringFromIndex:separator.location + 1];
+        }
+        break;
+    }
+    if ([label isEqualToString:@"main"]) return;
+    NSDictionary *detail = @{ @"windowId": @(windowId), @"label": label, @"url": url.absoluteString ?: @"" };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:detail options:0 error:nil];
+    if (!data) return;
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    [self emitEventNamed:@"webview:navigate" detailJSON:json ?: @"{}" windowId:windowId];
+}
+
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
-    (void)webView;
     NSURL *url = navigationAction.request.URL;
     if (!navigationAction.targetFrame || navigationAction.targetFrame.isMainFrame) {
         if ([self allowsNavigationURL:url]) {
+            [self emitNavigationForWebView:webView url:url];
             decisionHandler(WKNavigationActionPolicyAllow);
             return;
         }
@@ -952,6 +998,40 @@ static NSURL *ZeroNativeAssetEntryURL(NSString *origin, NSString *entryPath) {
     NSString *script = [NSString stringWithFormat:@"window.zero&&window.zero._emit(%@,%@);", nameJSON, detail];
     [webView evaluateJavaScript:script completionHandler:nil];
     [self scheduleBridgeFrames];
+}
+
+- (BOOL)handleShortcutEvent:(NSEvent *)event {
+    if (event.type != NSEventTypeKeyDown) return NO;
+    NSEventModifierFlags flags = event.modifierFlags;
+    if ((flags & NSEventModifierFlagCommand) == 0) return NO;
+    if ((flags & (NSEventModifierFlagControl | NSEventModifierFlagOption)) != 0) return NO;
+
+    NSString *key = event.charactersIgnoringModifiers.lowercaseString ?: @"";
+    NSString *command = nil;
+    if ([key isEqualToString:@"="] || [key isEqualToString:@"+"]) {
+        command = @"zoom-in";
+    } else if ([key isEqualToString:@"-"]) {
+        command = @"zoom-out";
+    } else if ([key isEqualToString:@"0"]) {
+        command = @"zoom-reset";
+    } else {
+        return NO;
+    }
+
+    uint64_t windowId = 1;
+    NSWindow *window = event.window ?: NSApp.keyWindow;
+    for (NSNumber *keyValue in self.windows) {
+        if (self.windows[keyValue] == window) {
+            windowId = keyValue.unsignedLongLongValue;
+            break;
+        }
+    }
+    NSDictionary *detail = @{ @"command": command };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:detail options:0 error:nil];
+    if (!data) return NO;
+    NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    [self emitEventNamed:@"shortcut" detailJSON:json ?: @"{}" windowId:windowId];
+    return YES;
 }
 
 - (void)showPreferences:(id)sender {

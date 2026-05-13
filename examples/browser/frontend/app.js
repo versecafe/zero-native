@@ -173,6 +173,17 @@ function remember(url) {
   updateHistoryButtons();
 }
 
+function updateAddressFromPage(url, options) {
+  options = options || {};
+  if (!url || url === currentUrl) return;
+  currentUrl = url;
+  addressInput.value = url;
+  updateSecurityIndicator(url);
+  hideError();
+  trackVisited(url);
+  if (options.record !== false) remember(url);
+}
+
 function trackVisited(url) {
   for (var i = 0; i < visitedUrls.length; i++) {
     if (visitedUrls[i] === url) return;
@@ -379,6 +390,11 @@ window.zero.on("resize", function (detail) {
   if (changed) scheduleResize(false);
 });
 
+window.zero.on("webview:navigate", function (detail) {
+  if (!detail || detail.label !== PAGE_WEBVIEW_LABEL) return;
+  updateAddressFromPage(detail.url);
+});
+
 // ── Event listeners ──
 
 form.addEventListener("submit", function (event) {
@@ -487,6 +503,17 @@ window.addEventListener("keydown", function (event) {
     applyZoom(zoomLevel - ZOOM_STEP);
   } else if (event.key === "0") {
     event.preventDefault();
+    applyZoom(1.0);
+  }
+});
+
+window.zero.on("shortcut", function (detail) {
+  if (!detail) return;
+  if (detail.command === "zoom-in") {
+    applyZoom(zoomLevel + ZOOM_STEP);
+  } else if (detail.command === "zoom-out") {
+    applyZoom(zoomLevel - ZOOM_STEP);
+  } else if (detail.command === "zoom-reset") {
     applyZoom(1.0);
   }
 });
